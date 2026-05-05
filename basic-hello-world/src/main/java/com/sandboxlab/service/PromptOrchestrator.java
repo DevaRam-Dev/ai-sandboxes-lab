@@ -1,19 +1,19 @@
 /**
  * PromptOrchestrator.java
  *
- * Glues the entire pipeline together. This is the single method the controller
- * calls. It coordinates all five services in sequence:
+ * Glues the entire pipeline together. Exposes two entry points:
+ *
+ *   handle()        — synchronous, returns PNG bytes (used by POST /ask / curl)
+ *   handleWithSse() — same pipeline, emits SSE events per step (used by POST /ask/stream)
+ *
+ * Both delegate to the private runPipeline() method, which runs all six steps
+ * in order and optionally fires SSE events when sse != null:
  *
  *   DateRangeParser     → parse the user's natural-language prompt
  *   SalesDataGenerator  → generate random sales data for the parsed range
  *   OllamaClient        → call the local LLM with a code-generation prompt
  *   CodeExtractor       → strip markdown/preamble from the LLM response
  *   E2BSandboxClient    → run the Python code in E2B and return PNG bytes
- *
- * Why a separate orchestrator instead of logic in the controller?
- *   Controllers should only handle HTTP concerns (request/response mapping,
- *   error codes). The pipeline logic lives here so it can evolve independently
- *   and be tested or replaced without touching the HTTP layer.
  *
  * Pipeline position: ChartController → PromptOrchestrator → (all services)
  */
@@ -38,7 +38,6 @@ public class PromptOrchestrator {
     private final CodeExtractor      codeExtractor;
     private final E2BSandboxClient   e2bSandboxClient;
 
-    // Constructor injection — all dependencies are mandatory
     public PromptOrchestrator(
             DateRangeParser    dateRangeParser,
             SalesDataGenerator salesDataGenerator,
@@ -53,83 +52,131 @@ public class PromptOrchestrator {
     }
 
     /**
-     * Runs the full pipeline for a given user prompt and returns PNG bytes.
-     *
-     * @param userPrompt natural-language prompt, e.g. "Plot bar chart from Jan 2026 to March 2026"
-     * @return raw PNG bytes of the generated chart
-     * @throws IllegalArgumentException if the prompt has no recognisable date range
-     * @throws RuntimeException if any pipeline step fails (Ollama, E2B, etc.)
+     * Synchronous entry point — used by POST /ask (curl / non-streaming).
+     * Returns raw PNG bytes; all pipeline exceptions propagate to the caller.
      */
     public byte[] handle(String userPrompt) {
+        return runPipeline(userPrompt, null);
+    }
+
+    /**
+     * SSE entry point — used by POST /ask/stream (browser fetch + ReadableStream).
+     * Runs the same pipeline but emits step-start / step-end / complete / error
+     * events via the supplied SseStepEmitter.  Exceptions are swallowed here
+     * because they have already been forwarded to the client via sse.emitError().
+     */
+    public void handleWithSse(String userPrompt, SseStepEmitter sse) {
+        try {
+            runPipeline(userPrompt, sse);
+        } catch (RuntimeException e) {
+            // Error already forwarded via sse.emitError() before the re-throw
+            log.debug("Pipeline exception already forwarded via SSE: {}", e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Core pipeline — runs all 6 steps; optionally emits SSE events
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private byte[] runPipeline(String userPrompt, SseStepEmitter sse) {
         long pipelineStart = System.currentTimeMillis();
         log.info(box("PIPELINE START") + lbl("Input", "\"" + userPrompt + "\""));
 
-        // ── Step 1: DateRangeParser ───────────────────────────────────────────
-        long t1 = System.currentTimeMillis();
-        DateRange dateRange = dateRangeParser.parse(userPrompt);
-        log.info(box("STEP 1 : DateRangeParser")
-            + lbl("Input",       "\"" + userPrompt + "\"")
-            + lbl("Description", "Parse natural-language date range into structured DateRange")
-            + lbl("Output",      "granularity=" + dateRange.granularity()
-                                 + ", year=" + dateRange.year()
-                                 + ", periods=" + dateRange.periods())
-            + lbl("Duration",    (System.currentTimeMillis() - t1) + "ms"));
+        int    currentStep     = 0;
+        String currentStepName = "";
 
-        // ── Step 2: SalesDataGenerator ────────────────────────────────────────
-        long t2 = System.currentTimeMillis();
-        Map<String, Integer> salesData = salesDataGenerator.generate(dateRange);
-        log.info(box("STEP 2 : SalesDataGenerator")
-            + lbl("Input",       dateRange)
-            + lbl("Description", "Generate random sales values (50-300) for each period")
-            + lbl("Output",      salesData)
-            + lbl("Duration",    (System.currentTimeMillis() - t2) + "ms"));
+        try {
+            // ── Step 1: DateRangeParser ───────────────────────────────────────
+            currentStep = 1; currentStepName = "Parsing date range";
+            long t1 = System.currentTimeMillis();
+            if (sse != null) sse.emitStepStart(1, currentStepName);
+            DateRange dateRange = dateRangeParser.parse(userPrompt);
+            if (sse != null) sse.emitStepEnd(1, currentStepName, System.currentTimeMillis() - t1);
+            log.info(box("STEP 1 : DateRangeParser")
+                + lbl("Input",       "\"" + userPrompt + "\"")
+                + lbl("Description", "Parse natural-language date range into structured DateRange")
+                + lbl("Output",      "granularity=" + dateRange.granularity()
+                                     + ", year=" + dateRange.year()
+                                     + ", periods=" + dateRange.periods())
+                + lbl("Duration",    (System.currentTimeMillis() - t1) + "ms"));
 
-        // ── Step 3: Build LLM prompt ──────────────────────────────────────────
-        long t3 = System.currentTimeMillis();
-        String llmPrompt = buildLlmPrompt(userPrompt, dateRange, salesData);
-        log.info(box("STEP 3 : Build LLM prompt")
-            + lbl("Input",       "userPrompt=\"" + userPrompt + "\", salesData=" + salesData)
-            + lbl("Description", "Compose code-generation prompt with inlined sales data")
-            + lbl("Output",      "<length=" + llmPrompt.length() + " chars>")
-            + "\n   Full LLM prompt:\n" + llmPrompt
-            + lbl("Duration",    (System.currentTimeMillis() - t3) + "ms"));
+            // ── Step 2: SalesDataGenerator ────────────────────────────────────
+            currentStep = 2; currentStepName = "Generating data";
+            long t2 = System.currentTimeMillis();
+            if (sse != null) sse.emitStepStart(2, currentStepName);
+            Map<String, Integer> salesData = salesDataGenerator.generate(dateRange);
+            if (sse != null) sse.emitStepEnd(2, currentStepName, System.currentTimeMillis() - t2);
+            log.info(box("STEP 2 : SalesDataGenerator")
+                + lbl("Input",       dateRange)
+                + lbl("Description", "Generate random sales values (50-300) for each period")
+                + lbl("Output",      salesData)
+                + lbl("Duration",    (System.currentTimeMillis() - t2) + "ms"));
 
-        // ── Step 4: OllamaClient (header now; close-out after response) ────────
-        log.info(box("STEP 4 : OllamaClient")
-            + lbl("Input",       "<length=" + llmPrompt.length() + " chars>")
-            + lbl("Description", "Call local Ollama LLM to generate Python chart code"));
-        long t4 = System.currentTimeMillis();
-        String rawLlmResponse = ollamaClient.generateCode(llmPrompt);
-        log.info("\n   Output      : <length={} chars>\n   Duration    : {}ms",
-            rawLlmResponse.length(), System.currentTimeMillis() - t4);
+            // ── Step 3: Build LLM prompt ──────────────────────────────────────
+            currentStep = 3; currentStepName = "Building LLM prompt";
+            long t3 = System.currentTimeMillis();
+            if (sse != null) sse.emitStepStart(3, currentStepName);
+            String llmPrompt = buildLlmPrompt(userPrompt, dateRange, salesData);
+            if (sse != null) sse.emitStepEnd(3, currentStepName, System.currentTimeMillis() - t3);
+            log.info(box("STEP 3 : Build LLM prompt")
+                + lbl("Input",       "userPrompt=\"" + userPrompt + "\", salesData=" + salesData)
+                + lbl("Description", "Compose code-generation prompt with inlined sales data")
+                + lbl("Output",      "<length=" + llmPrompt.length() + " chars>")
+                + "\n   Full LLM prompt:\n" + llmPrompt
+                + lbl("Duration",    (System.currentTimeMillis() - t3) + "ms"));
 
-        // ── Step 5: CodeExtractor (header now; close-out after extract) ────────
-        log.info(box("STEP 5 : CodeExtractor")
-            + lbl("Input",       "<length=" + rawLlmResponse.length() + " chars>")
-            + lbl("Description", "Strip markdown fences and preamble; extract clean Python"));
-        long t5 = System.currentTimeMillis();
-        String cleanCode = codeExtractor.extract(rawLlmResponse);
-        log.info("\n   Output      : <length={} chars>\n   Duration    : {}ms",
-            cleanCode.length(), System.currentTimeMillis() - t5);
+            // ── Step 4: OllamaClient ──────────────────────────────────────────
+            currentStep = 4; currentStepName = "Calling LLM (Ollama)";
+            log.info(box("STEP 4 : OllamaClient")
+                + lbl("Input",       "<length=" + llmPrompt.length() + " chars>")
+                + lbl("Description", "Call local Ollama LLM to generate Python chart code"));
+            long t4 = System.currentTimeMillis();
+            if (sse != null) sse.emitStepStart(4, currentStepName);
+            String rawLlmResponse = ollamaClient.generateCode(llmPrompt);
+            if (sse != null) sse.emitStepEnd(4, currentStepName, System.currentTimeMillis() - t4);
+            log.info("\n   Output      : <length={} chars>\n   Duration    : {}ms",
+                rawLlmResponse.length(), System.currentTimeMillis() - t4);
 
-        // Safety net: ensure the matplotlib non-interactive backend is set.
-        // In a headless sandbox there is no display; without 'Agg', plt.show()
-        // or the default TkAgg backend will crash the script.
-        String finalCode = ensureAggBackend(cleanCode);
-        log.debug("Final Python code:\n{}", finalCode);
+            // ── Step 5: CodeExtractor ─────────────────────────────────────────
+            currentStep = 5; currentStepName = "Extracting code";
+            log.info(box("STEP 5 : CodeExtractor")
+                + lbl("Input",       "<length=" + rawLlmResponse.length() + " chars>")
+                + lbl("Description", "Strip markdown fences and preamble; extract clean Python"));
+            long t5 = System.currentTimeMillis();
+            if (sse != null) sse.emitStepStart(5, currentStepName);
+            String cleanCode = codeExtractor.extract(rawLlmResponse);
+            String finalCode = ensureAggBackend(cleanCode);
+            if (sse != null) sse.emitStepEnd(5, currentStepName, System.currentTimeMillis() - t5);
+            log.info("\n   Output      : <length={} chars>\n   Duration    : {}ms",
+                cleanCode.length(), System.currentTimeMillis() - t5);
+            log.debug("Final Python code:\n{}", finalCode);
 
-        // ── Step 6: E2BSandboxClient (header now; close-out after PNG) ─────────
-        log.info(box("STEP 6 : E2BSandboxClient")
-            + lbl("Input",       "<length=" + finalCode.length() + " chars>")
-            + lbl("Description", "Execute Python in E2B cloud sandbox; retrieve PNG chart"));
-        long t6 = System.currentTimeMillis();
-        byte[] png = e2bSandboxClient.executePythonAndGetChart(finalCode);
-        log.info("\n   Output      : <length={} bytes PNG>\n   Duration    : {}ms",
-            png.length, System.currentTimeMillis() - t6);
+            // ── Step 6: E2BSandboxClient ──────────────────────────────────────
+            currentStep = 6; currentStepName = "Running in sandbox";
+            log.info(box("STEP 6 : E2BSandboxClient")
+                + lbl("Input",       "<length=" + finalCode.length() + " chars>")
+                + lbl("Description", "Execute Python in E2B cloud sandbox; retrieve PNG chart"));
+            long t6 = System.currentTimeMillis();
+            if (sse != null) sse.emitStepStart(6, currentStepName);
+            byte[] png = e2bSandboxClient.executePythonAndGetChart(finalCode);
+            if (sse != null) sse.emitStepEnd(6, currentStepName, System.currentTimeMillis() - t6);
+            log.info("\n   Output      : <length={} bytes PNG>\n   Duration    : {}ms",
+                png.length, System.currentTimeMillis() - t6);
 
-        log.info(box("PIPELINE END")
-            + lbl("Duration", (System.currentTimeMillis() - pipelineStart) + "ms"));
-        return png;
+            long totalDuration = System.currentTimeMillis() - pipelineStart;
+            log.info(box("PIPELINE END") + lbl("Duration", totalDuration + "ms"));
+            if (sse != null) sse.emitComplete(png, totalDuration);
+            return png;
+
+        } catch (RuntimeException e) {
+            // Forward error to SSE client before re-throwing so ChartController.ask()
+            // also gets the exception for its HTTP error mapping.
+            if (sse != null) {
+                sse.emitError(currentStep, currentStepName,
+                    e.getMessage() != null ? e.getMessage() : "Unknown error");
+            }
+            throw e;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -149,7 +196,6 @@ public class PromptOrchestrator {
      * any Java format-specifier escaping.
      */
     private String buildLlmPrompt(String userPrompt, DateRange dateRange, Map<String, Integer> salesData) {
-        // Actual sales data block — "  Jan: 182\n  Feb: 247\n  Mar: 91"
         String dataLines = salesData.entrySet().stream()
             .map(e -> "  " + e.getKey() + ": " + e.getValue())
             .collect(Collectors.joining("\n"));
@@ -218,22 +264,18 @@ public class PromptOrchestrator {
 
     /**
      * Ensures the matplotlib 'Agg' non-interactive backend is activated before
-     * pyplot is imported. Without this, the script will crash in E2B's headless
-     * Ubuntu environment because the default backend (TkAgg) requires a display.
-     *
-     * If the LLM already included the call, we leave the code as-is.
-     * If not, we prepend the two necessary lines.
+     * pyplot is imported. Without this, the script crashes in E2B's headless
+     * environment because the default TkAgg backend requires a display.
      */
     private String ensureAggBackend(String code) {
         if (code.contains("matplotlib.use(")) {
-            return code; // LLM already handled it
+            return code;
         }
-        // Prepend Agg setup before any existing matplotlib/pyplot imports
         return "import matplotlib\nmatplotlib.use('Agg')\n" + code;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    //  Log formatting helpers — bundle step content into a single log call
+    //  Log formatting helpers
     // ─────────────────────────────────────────────────────────────────────────
 
     private static final String BOX_H = "═".repeat(76);

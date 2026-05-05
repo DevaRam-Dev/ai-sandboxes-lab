@@ -2,8 +2,10 @@ com/sandboxlab/controller/ChartController.class
 com/sandboxlab/service/CodeExtractor.class
 com/sandboxlab/service/OllamaClient$GenerateRequest.class
 com/sandboxlab/service/PromptOrchestrator.class
+com/sandboxlab/service/SseStepEmitter.class
 com/sandboxlab/dto/AskRequest.class
 com/sandboxlab/service/E2BSandboxClientHttpRaw.class
+com/sandboxlab/config/AsyncConfig.class
 com/sandboxlab/service/SalesDataGenerator.class
 com/sandboxlab/dto/DateRange$Granularity.class
 com/sandboxlab/service/E2BSandboxClientHttpRaw$1.class

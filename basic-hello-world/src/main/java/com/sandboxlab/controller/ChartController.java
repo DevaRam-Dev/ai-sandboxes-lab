@@ -1,67 +1,59 @@
 /**
  * ChartController.java
  *
- * REST controller exposing a single endpoint: POST /ask
+ * Exposes two endpoints:
+ *
+ *   POST /ask         — synchronous, returns image/png (curl / backwards-compatible)
+ *   POST /ask/stream  — SSE stream, emits step-start/step-end/complete/error events
  *
  * The controller's only responsibilities are:
  *   1. Accept and validate the incoming JSON request
  *   2. Delegate all business logic to PromptOrchestrator
- *   3. Return the result (PNG bytes) or an appropriate HTTP error code
- *
- * No business logic lives here — that's intentional. The controller is the
- * HTTP boundary layer; the pipeline logic belongs in PromptOrchestrator.
- *
- * Endpoint:
- *   POST /ask
- *   Content-Type: application/json
- *   Body: {"prompt": "Plot bar chart from Jan 2026 to March 2026"}
- *
- *   Success response: 200 OK, Content-Type: image/png, body: PNG bytes
- *   Error responses:
- *     400 Bad Request  — prompt is blank or date range can't be parsed
- *     502 Bad Gateway  — E2B sandbox or Ollama call failed
- *     500 Internal     — unexpected error
- *
- * @CrossOrigin(origins = "*") is set so a future browser-based frontend can
- * call this endpoint without CORS errors.
+ *   3. Return the result or an appropriate error
  *
  * Pipeline position: HTTP → ChartController → PromptOrchestrator
  */
 package com.sandboxlab.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sandboxlab.dto.AskRequest;
 import com.sandboxlab.service.PromptOrchestrator;
+import com.sandboxlab.service.SseStepEmitter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
 
 @RestController
-@CrossOrigin(origins = "*") // allow future browser-based frontend to call this directly
+@CrossOrigin(origins = "*")
 public class ChartController {
 
     private static final Logger log = LoggerFactory.getLogger(ChartController.class);
 
     private final PromptOrchestrator promptOrchestrator;
+    private final ExecutorService    pipelineExecutor;
+    private final ObjectMapper       objectMapper;
 
-    public ChartController(PromptOrchestrator promptOrchestrator) {
+    public ChartController(
+            PromptOrchestrator promptOrchestrator,
+            ExecutorService    pipelineExecutor,
+            ObjectMapper       objectMapper) {
         this.promptOrchestrator = promptOrchestrator;
+        this.pipelineExecutor   = pipelineExecutor;
+        this.objectMapper       = objectMapper;
     }
 
-    /**
-     * Accepts a natural-language prompt and returns a PNG chart.
-     *
-     * Example:
-     *   curl -X POST http://localhost:8080/ask \
-     *        -H "Content-Type: application/json" \
-     *        -d '{"prompt": "Plot bar chart from Jan 2026 to March 2026"}' \
-     *        --output chart.png
-     *
-     * @param request JSON body containing the user's prompt
-     * @return 200 with PNG bytes, or 4xx/5xx with an error message
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    //  POST /ask  — synchronous image/png (curl-compatible, unchanged)
+    // ─────────────────────────────────────────────────────────────────────────
+
     @PostMapping(
         value    = "/ask",
         consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -108,8 +100,6 @@ public class ChartController {
         } catch (RuntimeException e) {
             long duration = System.currentTimeMillis() - start;
             String msg = e.getMessage() != null ? e.getMessage() : "Unknown error";
-
-            // Distinguish upstream failures (Ollama, E2B) from internal bugs
             if (msg.contains("E2B") || msg.contains("Ollama") || msg.contains("Connect RPC")) {
                 log.error("Upstream service error: {}", msg);
                 log.info(heavyBox("REQUEST END  [502]")
@@ -120,7 +110,6 @@ public class ChartController {
                     .contentType(MediaType.TEXT_PLAIN)
                     .body(("Upstream error: " + msg).getBytes());
             }
-
             log.error("Unexpected error processing /ask", e);
             log.info(heavyBox("REQUEST END  [500]")
                 + lbl("Output",   "HTTP 500 — internal error: " + msg)
@@ -130,6 +119,47 @@ public class ChartController {
                 .contentType(MediaType.TEXT_PLAIN)
                 .body(("Internal error: " + msg).getBytes());
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  POST /ask/stream  — SSE, browser fetch + ReadableStream
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @PostMapping(
+        value    = "/ask/stream",
+        consumes = MediaType.APPLICATION_JSON_VALUE,
+        produces = MediaType.TEXT_EVENT_STREAM_VALUE
+    )
+    public SseEmitter askStream(@RequestBody AskRequest request) {
+        SseEmitter emitter = new SseEmitter(90_000L);
+
+        if (request == null || request.prompt() == null || request.prompt().isBlank()) {
+            SseStepEmitter sse = new SseStepEmitter(emitter, objectMapper);
+            sse.emitError(0, "", "prompt must not be blank");
+            return emitter;
+        }
+
+        String prompt = request.prompt();
+        log.info(heavyBox("REQUEST START (SSE)")
+            + lbl("Input",       "\"" + prompt + "\"")
+            + lbl("Description", "POST /ask/stream — dispatching pipeline to background thread"));
+
+        // Copy MDC so transactionId from TransactionIdFilter propagates to the async thread
+        Map<String, String> mdcCopy = MDC.getCopyOfContextMap();
+
+        pipelineExecutor.submit(() -> {
+            if (mdcCopy != null) MDC.setContextMap(mdcCopy);
+            try {
+                SseStepEmitter sse = new SseStepEmitter(emitter, objectMapper);
+                promptOrchestrator.handleWithSse(prompt, sse);
+            } catch (Exception e) {
+                log.error("Unexpected error in SSE pipeline task: {}", e.getMessage());
+            } finally {
+                MDC.clear();
+            }
+        });
+
+        return emitter;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

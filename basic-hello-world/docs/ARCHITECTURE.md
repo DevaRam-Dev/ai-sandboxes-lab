@@ -228,3 +228,12 @@ ai-sandboxes-lab/
 
 See also: [LOGGING.md](LOGGING.md) — logging architecture and MDC transaction tracing  
 See also: [DEBUGGING-STORY.md](DEBUGGING-STORY.md) — how a silent chart-type bug was diagnosed in 5 minutes
+
+## A working AI pipeline that:
+
+1.Accepts natural language ("plot pie chart", "plot horizontal bar chart")  
+2.Routes through a 6-step Spring Boot pipeline with full per-layer logging  
+3.Generates Python code via local LLM  
+4.Executes that code safely in a remote sandbox  
+5.Returns rendered charts to a React UI  
+6.Handles four distinct chart types correctly with a 1.5B parameter model  
