@@ -50,12 +50,16 @@ public class CodeExtractor {
      * @return executable Python source code, trimmed of whitespace
      */
     public String extract(String rawResponse) {
-
         // Strategy 1 — explicit ```python fence (most reliable signal)
         Matcher pyFence = PYTHON_FENCE.matcher(rawResponse);
         if (pyFence.find()) {
             String code = pyFence.group(1).trim();
-            log.info("Extracted via ```python fence ({} chars)", code.length());
+            log.info(box("CodeExtractor")
+                + lbl("Input",   "<length=" + rawResponse.length() + " chars>")
+                + "\n   Full LLM response:\n" + rawResponse
+                + lbl("Stripped", "```python ... ``` markdown fence with language tag")
+                + lbl("Output",   "<length=" + code.length() + " chars>")
+                + "\n   Extracted code:\n" + code);
             return code;
         }
 
@@ -63,7 +67,12 @@ public class CodeExtractor {
         Matcher plainFence = PLAIN_FENCE.matcher(rawResponse);
         if (plainFence.find()) {
             String code = plainFence.group(1).trim();
-            log.info("Extracted via plain ``` fence ({} chars)", code.length());
+            log.info(box("CodeExtractor")
+                + lbl("Input",   "<length=" + rawResponse.length() + " chars>")
+                + "\n   Full LLM response:\n" + rawResponse
+                + lbl("Stripped", "``` ... ``` plain markdown fence (no language tag)")
+                + lbl("Output",   "<length=" + code.length() + " chars>")
+                + "\n   Extracted code:\n" + code);
             return code;
         }
 
@@ -79,13 +88,38 @@ public class CodeExtractor {
                     code.append(lines[j]).append("\n");
                 }
                 String result = code.toString().trim();
-                log.info("Extracted via first-import heuristic ({} chars)", result.length());
+                log.info(box("CodeExtractor")
+                    + lbl("Input",   "<length=" + rawResponse.length() + " chars>")
+                    + "\n   Full LLM response:\n" + rawResponse
+                    + lbl("Stripped", "preamble text before first import line (" + i + " lines skipped)")
+                    + lbl("Output",   "<length=" + result.length() + " chars>")
+                    + "\n   Extracted code:\n" + result);
                 return result;
             }
         }
 
         // Strategy 4 — fallback: return everything trimmed
-        log.warn("No code markers found; returning full trimmed response ({} chars)", rawResponse.trim().length());
-        return rawResponse.trim();
+        String result = rawResponse.trim();
+        log.warn("No code markers found; returning full trimmed response ({} chars)", result.length());
+        log.info(box("CodeExtractor")
+            + lbl("Input",   "<length=" + rawResponse.length() + " chars>")
+            + "\n   Full LLM response:\n" + rawResponse
+            + lbl("Stripped", "nothing — fallback, returning full trimmed response")
+            + lbl("Output",   "<length=" + result.length() + " chars>"));
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Log formatting helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static final String BOX_H = "═".repeat(76);
+
+    private static String box(String title) {
+        return "\n╔" + BOX_H + "╗\n║  " + String.format("%-74s", title) + "║\n╚" + BOX_H + "╝";
+    }
+
+    private static String lbl(String label, Object value) {
+        return "\n   " + String.format("%-11s", label) + " : " + value;
     }
 }

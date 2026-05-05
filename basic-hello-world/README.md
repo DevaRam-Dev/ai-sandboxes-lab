@@ -9,10 +9,17 @@ a natural-language prompt → a local LLM generates Python → an E2B cloud sand
 
 ## Architecture
 
+The user interface is either curl or the React app at ../frontend/, both hitting the same POST /ask endpoint.
+
 ```
- User
-  │  POST /ask  {"prompt": "Plot bar chart from Jan 2026 to March 2026"}
-  ▼
+┌─────────────────────────┐         ┌──────────────────────────────────────┐
+│  curl / API client      │         │  React UI  (Vite dev server, :5173)  │
+│                         │         │  proxies /api/* → localhost:8080     │
+└────────────┬────────────┘         └──────────────────┬───────────────────┘
+             │  POST /ask                              │  POST /api/ask
+             │  {"prompt": "Plot bar chart …"}         │  (proxied → /ask)
+             └──────────────────────┬──────────────────┘
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  ChartController  (Spring MVC, port 8080)                               │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -58,10 +65,14 @@ a natural-language prompt → a local LLM generates Python → an E2B cloud sand
 | Framework        | Spring Boot 3.2.12 (no Spring Boot) |
 | HTTP client      | Spring `RestClient` (Spring 6.1)    |
 | JSON             | Jackson (via starter-web)           |
-| Local LLM        | Ollama + gemma4:e2b                 |
+| Local LLM        | Ollama + qwen2.5-coder:1.5b         |
 | Code execution   | E2B cloud sandbox (direct HTTP)     |
 | Build tool       | Maven                               |
 | Packaging        | Fat JAR (no Docker, no WAR)         |
+| Frontend framework  | React 18                              |
+| Frontend build tool | Vite 8 + @vitejs/plugin-react v6      |
+| Frontend language   | JavaScript (no TypeScript)            |
+| Dev server proxy    | Vite proxies /api/* → localhost:8080  |
 
 ---
 
@@ -76,8 +87,8 @@ mvn --version    # 3.8+
 ### 2. Ollama (local LLM server)
 ```bash
 # Install Ollama: https://ollama.com
-ollama serve                   # start the server (default port 11434)
-ollama pull gemma4:e2b         # pull the model used by this POC
+ollama serve                         # start the server (default port 11434)
+ollama pull qwen2.5-coder:1.5b       # pull the model used by this POC
 ```
 
 ### 3. E2B API Key
@@ -112,7 +123,34 @@ Started BasicHelloWorldApplication in X.XXX seconds
 
 ---
 
-## Test the Endpoint
+## Quickstart (UI)
+
+Open three terminals:
+
+**Terminal 1 — Ollama (local LLM)**
+```bash
+ollama serve
+ollama list   # verify qwen2.5-coder:1.5b is listed
+```
+
+**Terminal 2 — Spring Boot backend**
+```bash
+cd basic-hello-world
+mvn spring-boot:run
+```
+
+**Terminal 3 — React frontend**
+```bash
+cd ../frontend
+npm install   # first time only
+npm run dev
+```
+
+Open **http://localhost:5173** and try: *"Plot bar chart from Jan 2026 to March 2026"*
+
+### curl alternative
+
+For scripting or headless use, the backend accepts requests directly — no frontend needed:
 
 ```bash
 # Monthly bar chart
@@ -204,6 +242,32 @@ basic-hello-world/
     │       └── DateRange.java                 ← granularity + periods + year
     └── resources/
         └── application.properties
+```
+
+---
+
+## Frontend
+
+The React chat UI lives at `../frontend/` (outside this Maven project).
+
+| Concern | Choice |
+|---------|--------|
+| Framework | React 18 + Vite 8 |
+| Language | JavaScript (no TypeScript, no UI library) |
+| Dev server | :5173 — proxies `/api/*` → `:8080` (no CORS config needed) |
+| Components | `App`, `ChatMessage`, `InputBar`, `ChartModal` |
+
+**Run the dev server:**
+```bash
+cd ../frontend
+npm install   # first time only
+npm run dev
+```
+
+**Build for production:**
+```bash
+cd ../frontend
+npm run build   # outputs to ../frontend/dist/
 ```
 
 ---

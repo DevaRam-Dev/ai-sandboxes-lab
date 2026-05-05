@@ -11,7 +11,7 @@ com/sandboxlab/service/E2BSandboxClient.class
 com/sandboxlab/dto/DateRange.class
 com/sandboxlab/service/DateRangeParser.class
 com/sandboxlab/service/OllamaClient.class
-com/sandboxlab/service/PromptOrchestrator$1.class
+com/sandboxlab/filter/TransactionIdFilter.class
 com/sandboxlab/BasicHelloWorldApplication.class
 com/sandboxlab/service/OllamaClient$GenerateResponse.class
 com/sandboxlab/service/E2BSandboxClientHttpRaw$2.class

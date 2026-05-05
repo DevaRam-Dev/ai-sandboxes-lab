@@ -88,7 +88,12 @@ public class OllamaClient {
      * @throws RuntimeException if Ollama is unreachable or returns an empty response
      */
     public String generateCode(String prompt) {
-        log.info("Calling Ollama — model='{}', prompt length={} chars", model, prompt.length());
+        log.info(box("OUT → Ollama")
+            + lbl("Model",  model)
+            + lbl("Prompt", "<length=" + prompt.length() + " chars>")
+            + "\n   Full prompt:\n" + prompt);
+
+        long callStart = System.currentTimeMillis();
 
         // Use .exchange() to bypass Spring's content-type-based converter selection.
         // We read the raw response stream into bytes ourselves, then decode UTF-8.
@@ -101,10 +106,11 @@ public class OllamaClient {
                 try (java.io.InputStream is = response.getBody()) {
                     byte[] bytes = is.readAllBytes();
                     String body = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                    log.info("Ollama HTTP status: {}, body length: {} bytes, first 200 chars: {}",
-                        response.getStatusCode(),
-                        bytes.length,
-                        body.substring(0, Math.min(body.length(), 200)));
+                    log.info(box("IN ← Ollama")
+                        + lbl("HTTP status", response.getStatusCode())
+                        + lbl("Body length", bytes.length + " bytes")
+                        + lbl("Duration",    (System.currentTimeMillis() - callStart) + "ms")
+                        + "\n   Full response body:\n" + body);
                     return body;
                 }
             });
@@ -121,7 +127,20 @@ public class OllamaClient {
             throw new RuntimeException("Ollama returned an empty response — is the model loaded?");
         }
 
-        log.info("Ollama response received: {} chars, done={}", response.response().length(), response.done());
         return response.response();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Log formatting helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static final String BOX_H = "═".repeat(76);
+
+    private static String box(String title) {
+        return "\n╔" + BOX_H + "╗\n║  " + String.format("%-74s", title) + "║\n╚" + BOX_H + "╝";
+    }
+
+    private static String lbl(String label, Object value) {
+        return "\n   " + String.format("%-11s", label) + " : " + value;
     }
 }

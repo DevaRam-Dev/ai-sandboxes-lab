@@ -68,33 +68,53 @@ public class ChartController {
         produces = MediaType.IMAGE_PNG_VALUE
     )
     public ResponseEntity<byte[]> ask(@RequestBody AskRequest request) {
+        long start = System.currentTimeMillis();
+
         if (request == null || request.prompt() == null || request.prompt().isBlank()) {
+            log.warn("Rejected request — prompt is blank");
             return ResponseEntity
                 .badRequest()
                 .contentType(MediaType.TEXT_PLAIN)
                 .body("prompt must not be blank".getBytes());
         }
 
+        String prompt = request.prompt();
+        log.info(heavyBox("REQUEST START")
+            + lbl("Input",       "\"" + prompt + "\"")
+            + lbl("Input size",  prompt.length() + " chars")
+            + lbl("Description", "POST /ask received — delegating to PromptOrchestrator pipeline"));
+
         try {
-            byte[] png = promptOrchestrator.handle(request.prompt());
+            byte[] png = promptOrchestrator.handle(prompt);
+            long duration = System.currentTimeMillis() - start;
+            log.info(heavyBox("REQUEST END")
+                + lbl("Output",   "HTTP 200, " + png.length + " bytes PNG")
+                + lbl("Duration", duration + "ms"));
             return ResponseEntity.ok()
                 .contentType(MediaType.IMAGE_PNG)
                 .body(png);
 
         } catch (IllegalArgumentException e) {
-            // Date-range parsing failed — caller sent an unsupported prompt format
+            long duration = System.currentTimeMillis() - start;
             log.warn("Bad request — could not parse date range: {}", e.getMessage());
+            log.info(heavyBox("REQUEST END  [400]")
+                + lbl("Output",   "HTTP 400 — " + e.getMessage())
+                + lbl("Duration", duration + "ms"));
             return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)
                 .contentType(MediaType.TEXT_PLAIN)
                 .body(e.getMessage().getBytes());
 
         } catch (RuntimeException e) {
+            long duration = System.currentTimeMillis() - start;
             String msg = e.getMessage() != null ? e.getMessage() : "Unknown error";
 
             // Distinguish upstream failures (Ollama, E2B) from internal bugs
             if (msg.contains("E2B") || msg.contains("Ollama") || msg.contains("Connect RPC")) {
                 log.error("Upstream service error: {}", msg);
+                log.info(heavyBox("REQUEST END  [502]")
+                    + lbl("Output",   "HTTP 502 — upstream error: " + msg)
+                    + lbl("Duration", duration + "ms"));
                 return ResponseEntity
                     .status(HttpStatus.BAD_GATEWAY)
                     .contentType(MediaType.TEXT_PLAIN)
@@ -102,10 +122,27 @@ public class ChartController {
             }
 
             log.error("Unexpected error processing /ask", e);
+            log.info(heavyBox("REQUEST END  [500]")
+                + lbl("Output",   "HTTP 500 — internal error: " + msg)
+                + lbl("Duration", duration + "ms"));
             return ResponseEntity
                 .status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .contentType(MediaType.TEXT_PLAIN)
                 .body(("Internal error: " + msg).getBytes());
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Log formatting helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static final String HEAVY_BAR = "█".repeat(78);
+
+    private static String heavyBox(String title) {
+        return "\n" + HEAVY_BAR + "\n█  " + String.format("%-74s", title) + "█\n" + HEAVY_BAR;
+    }
+
+    private static String lbl(String label, Object value) {
+        return "\n   " + String.format("%-11s", label) + " : " + value;
     }
 }

@@ -24,6 +24,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -70,10 +72,14 @@ public class E2BSandboxClient {
             // 2. Prepare output PNG path (file does not exist yet; runner writes it)
             outputPng = Files.createTempFile("e2b-chart-", ".png");
 
-            log.info("Spawning E2B runner: {} {} {} {}",
-                    pythonExecutable, runnerScriptPath, codeFile, outputPng);
+            log.info(box("OUT → subprocess")
+                + lbl("Code length", pythonCode.length() + " chars")
+                + lbl("Code file",   codeFile)
+                + lbl("Output file", outputPng)
+                + lbl("Command",     pythonExecutable + " " + runnerScriptPath
+                                     + " " + codeFile + " " + outputPng));
 
-            // 3. Build subprocess: python3 e2b_runner.py <code> <output>
+            // 3. Build subprocess: python3 e2b_sandbox_client.py <code> <output>
             ProcessBuilder pb = new ProcessBuilder(
                     pythonExecutable,
                     runnerScriptPath,
@@ -82,33 +88,71 @@ public class E2BSandboxClient {
             );
             // Pass E2B_API_KEY into the subprocess's environment
             pb.environment().put("E2B_API_KEY", apiKey);
-            // Merge stderr into stdout so we get a single output stream
-            pb.redirectErrorStream(true);
+            // Capture stdout and stderr separately so they can be logged individually
 
+            long subprocStart = System.currentTimeMillis();
             Process proc = pb.start();
+
+            // Drain stdout line by line in a background thread — Python's "[e2b_runner] ..."
+            // prints flow into Java logs while the subprocess runs, sharing the MDC transactionId.
+            StringBuilder stdoutCapture = new StringBuilder();
+            Thread stdoutReader = new Thread(() -> {
+                try (var reader = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        log.info("[subprocess stdout] {}", line);
+                        stdoutCapture.append(line).append("\n");
+                    }
+                } catch (Exception ignored) {}
+            });
+
+            // Drain stderr line by line — Python tracebacks and warnings land here
+            StringBuilder stderrCapture = new StringBuilder();
+            Thread stderrReader = new Thread(() -> {
+                try (var reader = new BufferedReader(new InputStreamReader(proc.getErrorStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        log.warn("[subprocess stderr] {}", line);
+                        stderrCapture.append(line).append("\n");
+                    }
+                } catch (Exception ignored) {}
+            });
+
+            stdoutReader.start();
+            stderrReader.start();
 
             // 4. Wait for completion with timeout
             boolean finished = proc.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
                 proc.destroyForcibly();
+                stdoutReader.interrupt();
+                stderrReader.interrupt();
                 throw new RuntimeException("E2B runner timed out after " + timeoutSeconds + "s");
             }
 
-            // 5. Capture subprocess output for logging/diagnostics
-            String output = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            stdoutReader.join(5000);
+            stderrReader.join(5000);
+
             int exitCode = proc.exitValue();
-            log.info("E2B runner exit={}, output:\n{}", exitCode, output);
+            long subprocDuration = System.currentTimeMillis() - subprocStart;
+            log.info(box("IN ← subprocess")
+                + lbl("Exit code",  exitCode)
+                + lbl("Stdout",     stdoutCapture.length() + " chars")
+                + lbl("Stderr",     stderrCapture.length() + " chars")
+                + lbl("Duration",   subprocDuration + "ms"));
 
             if (exitCode != 0) {
-                throw new RuntimeException("E2B runner failed (exit=" + exitCode + "): " + output);
+                throw new RuntimeException(
+                    "E2B runner failed (exit=" + exitCode + ")\n" +
+                    "stdout: " + stdoutCapture +
+                    "stderr: " + stderrCapture);
             }
 
-            // 6. Read the PNG bytes from the output file
+            // 5. Read the PNG bytes from the output file
             byte[] pngBytes = Files.readAllBytes(outputPng);
             if (pngBytes.length == 0) {
                 throw new RuntimeException("E2B runner reported success but output PNG is empty");
             }
-            log.info("Chart received: {} bytes", pngBytes.length);
             return pngBytes;
 
         } catch (RuntimeException e) {
@@ -120,5 +164,19 @@ public class E2BSandboxClient {
             try { if (codeFile  != null) Files.deleteIfExists(codeFile);  } catch (Exception ignored) {}
             try { if (outputPng != null) Files.deleteIfExists(outputPng); } catch (Exception ignored) {}
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Log formatting helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static final String BOX_H = "═".repeat(76);
+
+    private static String box(String title) {
+        return "\n╔" + BOX_H + "╗\n║  " + String.format("%-74s", title) + "║\n╚" + BOX_H + "╝";
+    }
+
+    private static String lbl(String label, Object value) {
+        return "\n   " + String.format("%-11s", label) + " : " + value;
     }
 }
