@@ -16,6 +16,9 @@
 package com.sandboxlab.service;
 
 import com.sandboxlab.dto.DateRange;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -25,8 +28,15 @@ import java.util.Random;
 @Component
 public class SalesDataGenerator {
 
+    private static final Logger log = LoggerFactory.getLogger(SalesDataGenerator.class);
+
     // Single Random instance — no fixed seed so each call yields different values
     private final Random random = new Random();
+
+    @PostConstruct
+    public void init() {
+        log.info("[SERVICE → SalesDataGenerator] initialized and ready | ANALOGY: Data fabricator loaded with random number tables");
+    }
 
     /**
      * Generates one random sales integer (50–300) for each period in the DateRange.
@@ -35,11 +45,14 @@ public class SalesDataGenerator {
      * @return ordered map of period label → sales value
      */
     public Map<String, Integer> generate(DateRange dateRange) {
+        log.info("[SERVICE → SalesDataGenerator] INPUT: generate | granularity={}, periods={}, year={} | action=GENERATE_SALES_DATA | ANALOGY: Fabricator picks random sales figures for each period",
+                dateRange.granularity(), dateRange.periods().size(), dateRange.year());
         Map<String, Integer> sales = new LinkedHashMap<>();
         for (String period : dateRange.periods()) {
             // nextInt(251) → [0, 250]; +50 shifts the range to [50, 300]
             sales.put(period, random.nextInt(251) + 50);
         }
+        log.info("[SERVICE → SalesDataGenerator] OUTPUT: generate | periods={}, salesData={} | ANALOGY: Fabricator hands over the sales table", sales.size(), sales);
         return sales;
     }
 }

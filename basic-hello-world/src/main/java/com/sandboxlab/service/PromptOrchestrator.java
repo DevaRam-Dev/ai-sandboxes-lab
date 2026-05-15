@@ -20,6 +20,7 @@
 package com.sandboxlab.service;
 
 import com.sandboxlab.dto.DateRange;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -49,6 +50,14 @@ public class PromptOrchestrator {
         this.ollamaClient       = ollamaClient;
         this.codeExtractor      = codeExtractor;
         this.e2bSandboxClient   = e2bSandboxClient;
+    }
+
+    @PostConstruct
+    public void init() {
+        log.info("[SERVICE → PromptOrchestrator] DEPARTMENT OPEN"
+               + " | pipeline=[DateRangeParser → SalesDataGenerator → OllamaClient → CodeExtractor → E2BSandboxClient]"
+               + " | status=[READY]"
+               + " | ANALOGY: Pipeline conductor at the podium, all 5 musicians ready");
     }
 
     /**

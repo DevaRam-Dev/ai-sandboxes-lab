@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sandboxlab.dto.AskRequest;
 import com.sandboxlab.service.PromptOrchestrator;
 import com.sandboxlab.service.SseStepEmitter;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -50,6 +51,14 @@ public class ChartController {
         this.objectMapper       = objectMapper;
     }
 
+    @PostConstruct
+    public void init() {
+        log.info("[CONTROLLER → ChartController] DEPARTMENT OPEN"
+               + " | endpoints=[POST /ask, POST /ask/stream]"
+               + " | status=[READY]"
+               + " | ANALOGY: Chart request reception desk opened for business");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  POST /ask  — synchronous image/png (curl-compatible, unchanged)
     // ─────────────────────────────────────────────────────────────────────────
@@ -71,7 +80,8 @@ public class ChartController {
         }
 
         String prompt = request.prompt();
-        log.info(heavyBox("REQUEST START")
+        log.info(heavyBox("REQUEST START : POST /ask")
+            + lbl("Layer",       "CONTROLLER → ChartController")
             + lbl("Input",       "\"" + prompt + "\"")
             + lbl("Input size",  prompt.length() + " chars")
             + lbl("Description", "POST /ask received — delegating to PromptOrchestrator pipeline"));
@@ -79,7 +89,8 @@ public class ChartController {
         try {
             byte[] png = promptOrchestrator.handle(prompt);
             long duration = System.currentTimeMillis() - start;
-            log.info(heavyBox("REQUEST END")
+            log.info(heavyBox("REQUEST END : POST /ask — 200 OK")
+                + lbl("Layer",    "CONTROLLER → ChartController")
                 + lbl("Output",   "HTTP 200, " + png.length + " bytes PNG")
                 + lbl("Duration", duration + "ms"));
             return ResponseEntity.ok()
@@ -140,7 +151,8 @@ public class ChartController {
         }
 
         String prompt = request.prompt();
-        log.info(heavyBox("REQUEST START (SSE)")
+        log.info(heavyBox("REQUEST START : POST /ask/stream")
+            + lbl("Layer",       "CONTROLLER → ChartController")
             + lbl("Input",       "\"" + prompt + "\"")
             + lbl("Description", "POST /ask/stream — dispatching pipeline to background thread"));
 

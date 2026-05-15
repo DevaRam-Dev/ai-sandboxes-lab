@@ -74,7 +74,7 @@ public class OllamaClient {
             .baseUrl(baseUrl)
             .requestFactory(factory)
             .build();
-        log.info("OllamaClient initialized — build marker: EXCHANGE_RAW_BYTES_v2 @ {}", java.time.Instant.now());
+        log.info("[SERVICE → OllamaClient] DEPARTMENT OPEN | model=[{}] | baseUrl=[{}] | status=[READY] | ANALOGY: AI code-gen writer at desk", model, baseUrl);
     }
 
     // ---------- Public API ----------
@@ -88,7 +88,8 @@ public class OllamaClient {
      * @throws RuntimeException if Ollama is unreachable or returns an empty response
      */
     public String generateCode(String prompt) {
-        log.info(box("OUT → Ollama")
+        log.info("[OLLAMA] PROMPT SENT | model={} | promptLength={} chars | endpoint=/api/generate", model, prompt.length());
+        log.debug(box("OUT → Ollama")
             + lbl("Model",  model)
             + lbl("Prompt", "<length=" + prompt.length() + " chars>")
             + "\n   Full prompt:\n" + prompt);
@@ -106,10 +107,13 @@ public class OllamaClient {
                 try (java.io.InputStream is = response.getBody()) {
                     byte[] bytes = is.readAllBytes();
                     String body = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                    log.info(box("IN ← Ollama")
+                    long durationMs = System.currentTimeMillis() - callStart;
+                    log.info("[OLLAMA] RESPONSE RECEIVED | status={} | bodyLength={} bytes | timeTaken={}ms",
+                            response.getStatusCode(), bytes.length, durationMs);
+                    log.debug(box("IN ← Ollama")
                         + lbl("HTTP status", response.getStatusCode())
                         + lbl("Body length", bytes.length + " bytes")
-                        + lbl("Duration",    (System.currentTimeMillis() - callStart) + "ms")
+                        + lbl("Duration",    durationMs + "ms")
                         + "\n   Full response body:\n" + body);
                     return body;
                 }

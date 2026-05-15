@@ -22,6 +22,9 @@
 package com.sandboxlab.service;
 
 import com.sandboxlab.dto.DateRange;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -32,6 +35,8 @@ import java.util.regex.Pattern;
 
 @Component
 public class DateRangeParser {
+
+    private static final Logger log = LoggerFactory.getLogger(DateRangeParser.class);
 
     // Maps any month name variant (lower-cased) → 1-based month number
     private static final Map<String, Integer> MONTH_TO_NUM = Map.ofEntries(
@@ -88,6 +93,11 @@ public class DateRangeParser {
         "(?i)Q(\\d)(?:\\s+\\d{4})?\\s+to\\s+Q(\\d)\\s+(\\d{4})"
     );
 
+    @PostConstruct
+    public void init() {
+        log.info("[SERVICE → DateRangeParser] initialized and ready | ANALOGY: Calendar interpreter ready at the desk");
+    }
+
     /**
      * Parses the user's prompt and returns a DateRange.
      *
@@ -96,13 +106,14 @@ public class DateRangeParser {
      * @throws IllegalArgumentException if the prompt contains no recognisable date range
      */
     public DateRange parse(String prompt) {
+        log.info("[SERVICE → DateRangeParser] INPUT: parse | promptLength={} chars | action=EXTRACT_DATE_RANGE | ANALOGY: Interpreter reads the date request", prompt.length());
         // Try quarterly first — the "Q" prefix makes it unambiguous
         Matcher qm = QUARTERLY.matcher(prompt);
         if (qm.find()) {
             int startQ = Integer.parseInt(qm.group(1));
             int endQ   = Integer.parseInt(qm.group(2));
             int year   = Integer.parseInt(qm.group(3));
-            return new DateRange(DateRange.Granularity.QUARTERLY, buildQuarters(startQ, endQ), year);
+            return logAndReturn(new DateRange(DateRange.Granularity.QUARTERLY, buildQuarters(startQ, endQ), year));
         }
 
         // Try monthly with year written right after the start month
@@ -111,7 +122,7 @@ public class DateRangeParser {
             int start = resolveMonth(m1.group(1));
             int year  = Integer.parseInt(m1.group(2));
             int end   = resolveMonth(m1.group(3));
-            return new DateRange(DateRange.Granularity.MONTHLY, buildMonths(start, end), year);
+            return logAndReturn(new DateRange(DateRange.Granularity.MONTHLY, buildMonths(start, end), year));
         }
 
         // Try monthly with year only at the tail
@@ -120,13 +131,19 @@ public class DateRangeParser {
             int start = resolveMonth(m2.group(1));
             int end   = resolveMonth(m2.group(2));
             int year  = Integer.parseInt(m2.group(3));
-            return new DateRange(DateRange.Granularity.MONTHLY, buildMonths(start, end), year);
+            return logAndReturn(new DateRange(DateRange.Granularity.MONTHLY, buildMonths(start, end), year));
         }
 
         throw new IllegalArgumentException(
             "No recognisable date range found in prompt. " +
             "Expected 'Jan 2026 to March 2026' or 'Q1 to Q3 2026'. Got: " + prompt
         );
+    }
+
+    private DateRange logAndReturn(DateRange result) {
+        log.info("[SERVICE → DateRangeParser] OUTPUT: parse | granularity={}, periods={}, year={} | ANALOGY: Interpreter decoded the date range",
+                result.granularity(), result.periods(), result.year());
+        return result;
     }
 
     /** Returns the 1-based month number for names like "jan", "January", "MARCH". */

@@ -21,6 +21,7 @@
  */
 package com.sandboxlab.service;
 
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -42,6 +43,11 @@ public class CodeExtractor {
     private static final Pattern PLAIN_FENCE = Pattern.compile(
         "```\\s*\\n(.*?)```", Pattern.DOTALL
     );
+
+    @PostConstruct
+    public void init() {
+        log.info("[SERVICE → CodeExtractor] initialized and ready | ANALOGY: Code scanner tool powered on");
+    }
 
     /**
      * Extracts clean, executable Python code from a raw LLM response string.
